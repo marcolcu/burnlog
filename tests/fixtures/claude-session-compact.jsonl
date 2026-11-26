@@ -1,0 +1,1 @@
+{"type":"system","subtype":"compact_boundary","uuid":"fixture-boundary-001","parentUuid":"fixture-assistant-003","logicalParentUuid":"fixture-user-003","sessionId":"fixture-session-compact","timestamp":"2026-01-01T00:02:00.000Z","version":"2.1.323","compactMetadata":{"trigger":"auto","preTokens":1000},"content":"Synthetic compact boundary."}
