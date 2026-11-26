@@ -1,0 +1,27 @@
+[package]
+name = "burnlog"
+version = "0.1.0"
+edition = "2024"
+description = "Local CLI for analyzing AI coding session token usage"
+license = "MIT"
+repository = "https://github.com/marcolcu/burnlog"
+readme = "README.md"
+keywords = ["ai", "tokens", "cli", "claude-code", "analytics"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
