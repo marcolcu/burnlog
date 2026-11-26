@@ -54,7 +54,10 @@ fn total_tokens(session: &Value) -> u64 {
 #[test]
 fn report_table_shows_sections_and_unparsed_footer() {
     let temp = project_with_sessions();
-    let output = command(temp.path()).arg("report").output().unwrap();
+    let output = command(temp.path())
+        .args(["report", "fixture-unparsed"])
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "{}",
