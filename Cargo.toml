@@ -6,6 +6,7 @@ description = "Local CLI for analyzing AI coding session token usage"
 license = "MIT"
 repository = "https://github.com/marcolcu/burnlog"
 readme = "README.md"
+include = ["Cargo.toml", "README.md", "CHANGELOG.md", "LICENSE", "src/**"]
 keywords = ["ai", "tokens", "cli", "claude-code", "analytics"]
 categories = ["command-line-utilities", "development-tools"]
 
