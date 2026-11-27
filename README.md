@@ -18,6 +18,10 @@ Or build from a checkout:
 cargo install --path .
 ```
 
+## Update
+
+Update an installed release with `cargo install burnlog --force`, or download the latest binary from [GitHub Releases](https://github.com/marcolcu/burnlog/releases/latest).
+
 ## Usage
 
 Run a report from a project directory that has Claude Code session logs:
@@ -32,6 +36,8 @@ This output was produced by running `burnlog report` against the synthetic fixtu
 
 ```text
 SESSION fixture-session-basic
+Turns: 1 | Duration: 1s | Cache-read share: 17.6%
+Resumed session: unknown
 
 TOKENS
   input: 12
@@ -40,19 +46,20 @@ TOKENS
   cache write: 2
 
 CONTEXT GROWTH
-  start: 17
+  first observed turn: 17
   middle: 17
   end: 17
 
 TOP TOOL RESULTS
-  none
+  none found (0 tool blocks parsed)
 
 REPEATED READS
-  none
+  none found (0 tool blocks parsed)
 
 FINDINGS
   none
-Unparsed lines: 0
+Unparsed lines: 0 (invalid JSON: 0, unknown type: 0, deserialize failed: 0, other: 0)
+Ignored lines: 0
 ```
 
 ## Limits

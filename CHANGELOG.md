@@ -2,9 +2,10 @@
 
 ## [0.1.1] - 2026-11-27
 
-- Parse nested tool results and Read targets, and deduplicate repeated assistant message IDs.
-- Report unparsed reasons, ignored metadata, resume uncertainty, turn context, duration, and cache-read share.
-- Format table numbers with separators and distinguish empty tool sections.
+- Parse tool blocks nested in `message.content`, link tool results by `tool_use_id`, and deduplicate assistant usage by `message.id`.
+- Break down unparsed lines by reason and report resume detection.
+- Label context growth as "first observed turn" and empty sections as "none found (0 tool blocks parsed)".
+- Format numbers with separators and add turns, duration, and cache-read share to the report header.
 
 ## [0.1.0] - 2026-11-26
 

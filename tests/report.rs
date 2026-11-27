@@ -56,9 +56,22 @@ fn total_tokens(session: &Value) -> u64 {
 }
 
 #[test]
+fn cli_reports_package_version() {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("burnlog")
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "burnlog 0.1.1\n");
+}
+
+#[test]
 fn report_table_shows_sections_and_unparsed_footer() {
     let temp = project_with_sessions();
-    let output = command(temp.path()).arg("report").output().unwrap();
+    let output = command(temp.path())
+        .args(["report", "fixture-unparsed"])
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "{}",
