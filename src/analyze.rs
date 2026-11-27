@@ -1,6 +1,7 @@
 //! Token usage analysis.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use crate::model::{Event, EventKind};
 
@@ -42,6 +43,10 @@ pub struct Finding {
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionReport {
+    pub turns: usize,
+    pub duration_seconds: Option<u64>,
+    pub resumed_session: ResumeStatus,
+    pub tool_blocks_parsed: usize,
     pub token_totals: TokenTotals,
     pub context_growth: [Option<u64>; 3],
     pub initial_context_size: Option<u64>,
@@ -50,18 +55,53 @@ pub struct SessionReport {
     pub findings: Vec<Finding>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResumeStatus {
+    Yes,
+    No,
+    #[default]
+    Unknown,
+}
+
 pub fn analyze(events: &[Event]) -> SessionReport {
     let mut report = SessionReport::default();
     let mut contexts = BTreeMap::<usize, u64>::new();
     let mut reads = BTreeMap::<String, (usize, u64)>::new();
     let mut tools = Vec::new();
+    let mut turns = BTreeSet::new();
+    let mut session_ids = BTreeSet::new();
+    let mut timestamps = Vec::new();
     for event in events {
+        if let Some(session_id) = &event.session_id {
+            session_ids.insert(session_id);
+        }
+        if let Some(timestamp) = &event.timestamp
+            && let Some(seconds) = timestamp_seconds(timestamp)
+        {
+            timestamps.push(seconds);
+        }
+        if matches!(event.kind, EventKind::ToolCall | EventKind::ToolResult) {
+            report.tool_blocks_parsed += 1;
+        }
+        if matches!(
+            event.kind,
+            EventKind::AssistantMessage | EventKind::ToolCall
+        ) && (event.usage.input_tokens.is_some()
+            || event.usage.output_tokens.is_some()
+            || event.usage.cache_read_input_tokens.is_some()
+            || event.usage.cache_creation_input_tokens.is_some())
+        {
+            turns.insert(event.turn_index);
+        }
         let usage = &event.usage;
         report.token_totals.input += usage.input_tokens.unwrap_or(0);
         report.token_totals.output += usage.output_tokens.unwrap_or(0);
         report.token_totals.cache_read += usage.cache_read_input_tokens.unwrap_or(0);
         report.token_totals.cache_write += usage.cache_creation_input_tokens.unwrap_or(0);
-        if event.kind == EventKind::AssistantMessage {
+        if matches!(
+            event.kind,
+            EventKind::AssistantMessage | EventKind::ToolCall
+        ) {
             let size = usage.input_tokens.unwrap_or(0)
                 + usage.cache_read_input_tokens.unwrap_or(0)
                 + usage.cache_creation_input_tokens.unwrap_or(0);
@@ -91,6 +131,15 @@ pub fn analyze(events: &[Event]) -> SessionReport {
             }
         }
     }
+    report.turns = turns.len();
+    report.resumed_session = if session_ids.len() > 1 {
+        ResumeStatus::Yes
+    } else {
+        ResumeStatus::Unknown
+    };
+    if let (Some(first), Some(last)) = (timestamps.iter().min(), timestamps.iter().max()) {
+        report.duration_seconds = Some((last - first) as u64);
+    }
     report.context_growth = context_snapshots(&contexts);
     report.initial_context_size = contexts.values().next().copied();
     tools.sort_by_key(|item| std::cmp::Reverse(item.size));
@@ -105,7 +154,8 @@ pub fn analyze(events: &[Event]) -> SessionReport {
             summed_size,
         })
         .collect();
-    if let Some(size) = report.initial_context_size
+    if report.resumed_session == ResumeStatus::No
+        && let Some(size) = report.initial_context_size
         && size > INITIAL_CONTEXT_THRESHOLD
     {
         report.findings.push(Finding {
@@ -136,6 +186,51 @@ pub fn analyze(events: &[Event]) -> SessionReport {
         });
     }
     report
+}
+
+fn timestamp_seconds(timestamp: &str) -> Option<i64> {
+    let (date, time) = timestamp.split_once('T')?;
+    let mut date = date.split('-');
+    let year = date.next()?.parse::<i64>().ok()?;
+    let month = date.next()?.parse::<i64>().ok()?;
+    let day = date.next()?.parse::<i64>().ok()?;
+    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let (clock, offset) = if let Some(clock) = time.strip_suffix('Z') {
+        (clock, 0)
+    } else {
+        let index = time.char_indices().rev().find_map(|(index, ch)| {
+            (index > 2 && matches!(ch, '+' | '-')).then_some((index, ch))
+        })?;
+        let (clock, offset) = time.split_at(index.0);
+        let mut offset = offset[1..].split(':');
+        let hours = offset.next()?.parse::<i64>().ok()?;
+        let minutes = offset.next()?.parse::<i64>().ok()?;
+        if offset.next().is_some() || hours > 23 || minutes > 59 {
+            return None;
+        }
+        let seconds = hours * 3600 + minutes * 60;
+        (clock, if index.1 == '+' { seconds } else { -seconds })
+    };
+    let clock = clock.split('.').next()?;
+    let mut clock = clock.split(':');
+    let hour = clock.next()?.parse::<i64>().ok()?;
+    let minute = clock.next()?.parse::<i64>().ok()?;
+    let second = clock.next()?.parse::<i64>().ok()?;
+    if clock.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let adjusted_month = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(
+        (era * 146_097 + day_of_era - 719_468) * 86_400 + hour * 3600 + minute * 60 + second
+            - offset,
+    )
 }
 
 fn context_snapshots(contexts: &BTreeMap<usize, u64>) -> [Option<u64>; 3] {
@@ -219,7 +314,7 @@ mod tests {
             report
                 .findings
                 .iter()
-                .any(|f| f.name == "initial_context_large")
+                .all(|f| f.name != "initial_context_large")
         );
         assert!(
             report

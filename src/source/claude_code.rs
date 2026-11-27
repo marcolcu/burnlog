@@ -16,6 +16,12 @@ const PROJECTS_DIR_ENV: &str = "BURNLOG_CLAUDE_PROJECTS_DIR";
 pub struct ParseStats {
     pub parsed: usize,
     pub unparsed: usize,
+    pub invalid_json: usize,
+    pub unknown_type: usize,
+    pub deserialize_failed: usize,
+    pub other: usize,
+    pub ignored: usize,
+    pub session_id_count: usize,
 }
 
 #[derive(Debug, Error)]
@@ -28,27 +34,58 @@ pub enum ParseError {
 pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseError> {
     let mut events = Vec::new();
     let mut stats = ParseStats::default();
-    let mut seen_assistant_rows = HashSet::new();
+    let mut seen_message_ids = HashSet::new();
     let mut turn_indices: HashMap<Option<String>, usize> = HashMap::new();
-    let mut tool_names = HashMap::new();
+    let mut tools = HashMap::new();
+    let mut session_ids = HashSet::new();
 
     for line in reader.lines() {
         let line = line?;
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            stats.unparsed += 1;
+            stats.invalid_json += 1;
             continue;
         };
 
-        let Some(record_type) = record.get("type").and_then(Value::as_str) else {
-            stats.unparsed += 1;
+        let Some(record) = record.as_object() else {
+            stats.other += 1;
             continue;
         };
-        if !matches!(record_type, "user" | "assistant" | "system") {
-            stats.unparsed += 1;
+        let Some(record_type) = record.get("type").and_then(Value::as_str) else {
+            stats.other += 1;
+            continue;
+        };
+        if let Some(session_id) = record
+            .get("sessionId")
+            .or_else(|| record.get("session_id"))
+            .and_then(Value::as_str)
+        {
+            session_ids.insert(session_id.to_owned());
+        }
+        if is_ignored_type(record_type) {
+            stats.ignored += 1;
             continue;
         }
-
-        if record_type == "assistant" && !seen_assistant_rows.insert(line) {
+        if record_type == "system"
+            && record.get("subtype").and_then(Value::as_str) != Some("compact_boundary")
+        {
+            stats.unknown_type += 1;
+            continue;
+        }
+        if !matches!(record_type, "user" | "assistant" | "system") {
+            stats.unknown_type += 1;
+            continue;
+        }
+        let record = Value::Object(record.clone());
+        if matches!(record_type, "user" | "assistant")
+            && !record.get("message").is_some_and(Value::is_object)
+        {
+            stats.deserialize_failed += 1;
+            continue;
+        }
+        if record_type == "assistant"
+            && let Some(message_id) = record.pointer("/message/id").and_then(Value::as_str)
+            && !seen_message_ids.insert(message_id.to_owned())
+        {
             stats.parsed += 1;
             continue;
         }
@@ -59,16 +96,10 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
         let timestamp = string_field(&record, "timestamp");
         let mut row_events = match record_type {
             "assistant" => {
-                remember_tool_names(&record, &mut tool_names);
+                remember_tools(&record, &mut tools);
                 assistant_events(&record, session_id, turn_index, timestamp)
             }
-            "user" => user_events(
-                &record,
-                session_id.clone(),
-                turn_index,
-                timestamp,
-                &tool_names,
-            ),
+            "user" => user_events(&record, session_id.clone(), turn_index, timestamp, &tools),
             "system"
                 if record.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
             {
@@ -82,10 +113,6 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
             _ => Vec::new(),
         };
 
-        if row_events.is_empty() {
-            stats.unparsed += 1;
-            continue;
-        }
         if record_type == "user"
             && row_events
                 .iter()
@@ -98,7 +125,26 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
         events.append(&mut row_events);
     }
 
+    stats.unparsed =
+        stats.invalid_json + stats.unknown_type + stats.deserialize_failed + stats.other;
+    stats.session_id_count = session_ids.len();
+
     Ok((events, stats))
+}
+
+fn is_ignored_type(record_type: &str) -> bool {
+    matches!(
+        record_type,
+        "attachment"
+            | "cost-state"
+            | "file-history-snapshot"
+            | "file-history-delta"
+            | "last-prompt"
+            | "mode"
+            | "permission-mode"
+            | "api-request"
+            | "queue-operation"
+    )
 }
 
 /// Resolve sessions from `BURNLOG_CLAUDE_PROJECTS_DIR` or the default Claude directory.
@@ -198,7 +244,7 @@ fn user_events(
     session_id: Option<String>,
     turn_index: usize,
     timestamp: Option<String>,
-    tool_names: &HashMap<String, String>,
+    tools: &HashMap<String, (String, Option<String>)>,
 ) -> Vec<Event> {
     let content = record.pointer("/message/content");
     let blocks = content.and_then(Value::as_array);
@@ -224,17 +270,18 @@ fn user_events(
                 timestamp.clone(),
                 EventKind::ToolResult,
             );
-            item.tool_name = block
+            let tool = block
                 .get("tool_use_id")
                 .and_then(Value::as_str)
-                .and_then(|tool_id| tool_names.get(tool_id))
-                .cloned();
+                .and_then(|tool_id| tools.get(tool_id));
+            item.tool_name = tool.map(|(name, _)| name.clone());
+            item.target_path = tool.and_then(|(_, path)| path.clone());
             item
         })
         .collect()
 }
 
-fn remember_tool_names(record: &Value, tool_names: &mut HashMap<String, String>) {
+fn remember_tools(record: &Value, tools: &mut HashMap<String, (String, Option<String>)>) {
     let Some(blocks) = record.pointer("/message/content").and_then(Value::as_array) else {
         return;
     };
@@ -245,7 +292,16 @@ fn remember_tool_names(record: &Value, tool_names: &mut HashMap<String, String>)
                 block.get("name").and_then(Value::as_str),
             )
         {
-            tool_names.insert(id.to_owned(), name.to_owned());
+            tools.insert(
+                id.to_owned(),
+                (
+                    name.to_owned(),
+                    block
+                        .pointer("/input/file_path")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                ),
+            );
         }
     }
 }

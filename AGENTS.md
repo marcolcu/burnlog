@@ -27,3 +27,4 @@ RULES:
 - Keep dependencies minimal; ask before adding a new crate.
 - Commits: conventional commits, one logical change each.
 - Estimated values (not read from logs) must be labeled "estimated" in output.
+- Tool blocks live in `message.content[]`; link results by `tool_use_id` and deduplicate assistant usage by `message.id`.

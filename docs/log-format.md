@@ -108,3 +108,21 @@ Three small invented examples in `tests/fixtures/` cover a user/assistant
 exchange with usage, a tool call/result pair, and a compaction boundary. Their
 IDs, text, and paths are synthetic; they are structural examples, not real
 logs.
+
+## Parser handling
+
+The sampled `attachment`, `cost-state`, `file-history-snapshot`,
+`file-history-delta`, `last-prompt`, `mode`, `permission-mode`, `api-request`,
+and `queue-operation` records carry no assistant usage or tool blocks and can
+be ignored by a token report. Other unrecognized record types are unexpected.
+A known `user` or `assistant` record without a message object is malformed.
+Only `system/compact_boundary` is currently used; other system subtypes are
+unexpected because their usage and tool behavior are not established here.
+Multiple distinct session IDs in one file are direct evidence of a resumed
+session. The sampled format provides no reliable evidence that a single-ID
+file was not resumed, so its resume status is unknown.
+
+Tool calls and results are nested in their respective `message.content[]`
+arrays. A result's `tool_use_id` links it to a call's `id`; that link also
+provides the call's tool name and `Read` path. Repeated assistant `message.id`
+values identify a replay for usage deduplication.

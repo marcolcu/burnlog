@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 
+use burnlog::analyze::analyze;
 use burnlog::model::EventKind;
 use burnlog::source::claude_code::{discover_sessions_with_root, parse};
 
@@ -52,6 +53,7 @@ fn malformed_line_is_counted_as_unparsed() {
     let input = format!("{{bad json}}\n{}", fixture("claude-session-basic.jsonl"));
     let (_, stats) = parse(Cursor::new(input)).unwrap();
     assert_eq!(stats.parsed, 2);
+    assert_eq!(stats.invalid_json, 1);
     assert_eq!(stats.unparsed, 1);
 }
 
@@ -61,6 +63,7 @@ fn unknown_record_type_is_skipped_and_counted() {
     let (events, stats) = parse(Cursor::new(input)).unwrap();
     assert!(events.is_empty());
     assert_eq!(stats.parsed, 0);
+    assert_eq!(stats.unknown_type, 1);
     assert_eq!(stats.unparsed, 1);
 }
 
@@ -75,6 +78,62 @@ fn exact_duplicate_assistant_record_does_not_repeat_usage() {
     let (events, stats) = parse(Cursor::new(input)).unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(stats.parsed, 2);
+    assert_eq!(stats.unparsed, 0);
+}
+
+#[test]
+fn parses_real_nested_tool_blocks_and_deduplicates_message_ids() {
+    let contents = fixture("claude-session-real-structure.jsonl");
+    let (events, stats) = parse(Cursor::new(contents.clone())).unwrap();
+    assert!(stats.unparsed * 20 < contents.lines().count());
+    assert_eq!(stats.ignored, 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::ToolResult)
+            .count(),
+        2
+    );
+    let report = analyze(&events);
+    assert_eq!(report.repeated_reads.len(), 1);
+    assert_eq!(report.repeated_reads[0].count, 2);
+    assert_eq!(report.token_totals.input, 200_001);
+    assert_eq!(
+        report.resumed_session,
+        burnlog::analyze::ResumeStatus::Unknown
+    );
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.name == "initial_context_large")
+    );
+}
+
+#[test]
+fn multiple_session_ids_are_resume_evidence() {
+    let input = r#"{"type":"assistant","sessionId":"one","message":{"id":"m1","content":[],"usage":{"input_tokens":1}}}
+{"type":"assistant","sessionId":"two","message":{"id":"m2","content":[],"usage":{"input_tokens":1}}}"#;
+    let (events, _) = parse(Cursor::new(input)).unwrap();
+    let report = analyze(&events);
+    assert_eq!(report.resumed_session, burnlog::analyze::ResumeStatus::Yes);
+}
+
+#[test]
+fn parse_stats_break_down_unparsed_reasons() {
+    let input = "{bad json}\n[]\n{\"type\":\"future-event\"}\n{\"type\":\"assistant\"}\n";
+    let (_, stats) = parse(Cursor::new(input)).unwrap();
+    assert_eq!(stats.invalid_json, 1);
+    assert_eq!(stats.other, 1);
+    assert_eq!(stats.unknown_type, 1);
+    assert_eq!(stats.deserialize_failed, 1);
+    assert_eq!(stats.unparsed, 4);
+}
+
+#[test]
+fn documented_metadata_type_is_ignored() {
+    let (_, stats) = parse(Cursor::new(r#"{"type":"attachment"}"#)).unwrap();
+    assert_eq!(stats.ignored, 1);
     assert_eq!(stats.unparsed, 0);
 }
 
