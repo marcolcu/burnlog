@@ -1,7 +1,11 @@
 use std::fs;
 use std::path::Path;
 
+use burnlog::analyze::analyze;
+use burnlog::render::table;
+use burnlog::source::claude_code::{ParseStats, parse};
 use serde_json::Value;
+use std::io::Cursor;
 
 fn project_with_sessions() -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
@@ -74,6 +78,7 @@ fn report_table_shows_sections_and_unparsed_footer() {
         stdout.contains("Unparsed lines: 1"),
         "missing unparsed footer: {stdout}"
     );
+    assert!(stdout.contains("invalid JSON:"));
 }
 
 #[test]
@@ -90,6 +95,21 @@ fn report_json_and_session_filter_are_valid() {
     );
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["session_id"], "fixture-session-basic");
+    assert_eq!(json["unparsed_breakdown"]["invalid_json"], 0);
+}
+
+#[test]
+fn json_includes_unparsed_reasons_as_raw_counts() {
+    let temp = project_with_sessions();
+    let output = command(temp.path())
+        .args(["report", "fixture-unparsed", "--json", "--compact"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["unparsed"], 1);
+    assert_eq!(json["unparsed_breakdown"]["invalid_json"], 1);
+    assert_eq!(json["token_totals"]["input"], 0);
 }
 
 #[test]
@@ -120,4 +140,33 @@ fn missing_log_directory_has_readable_error() {
     let output = command(temp.path()).arg("report").output().unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("No Claude Code session logs found"));
+}
+
+#[test]
+fn header_reports_turns_duration_cache_share_and_unknown_resume() {
+    let input = fs::read_to_string("tests/fixtures/claude-session-real-structure.jsonl").unwrap();
+    let (events, stats) = parse(Cursor::new(input)).unwrap();
+    let report = analyze(&events);
+    let output = table("synthetic", &report, stats, false);
+    assert!(output.contains("Turns: 1"));
+    assert!(output.contains("Duration: 5s"));
+    assert!(output.contains("Cache-read share: 33.1%"));
+    assert!(output.contains("Resumed session: unknown"));
+    assert!(output.contains("first observed turn: 151,003"));
+    assert!(output.contains("input: 200,001"));
+    assert!(!output.contains("initial_context_large"));
+}
+
+#[test]
+fn tool_sections_explain_empty_results() {
+    let report = analyze(&[]);
+    let empty = table("empty", &report, ParseStats::default(), false);
+    assert!(empty.contains("none found (0 tool blocks parsed)"));
+
+    let (events, stats) = parse(Cursor::new(
+        fs::read_to_string("tests/fixtures/claude-session-tool.jsonl").unwrap(),
+    ))
+    .unwrap();
+    let output = table("one-read", &analyze(&events), stats, false);
+    assert!(output.contains("none (2 tool blocks parsed, none qualified)"));
 }

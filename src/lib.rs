@@ -40,7 +40,7 @@ enum Command {
 struct SessionSummary {
     session_id: String,
     report: analyze::SessionReport,
-    unparsed: usize,
+    parse_stats: source::claude_code::ParseStats,
 }
 
 pub fn run() -> Result<()> {
@@ -79,7 +79,7 @@ fn run_report(all: bool, selected_id: Option<&str>, json: bool, compact: bool) -
         let values: Vec<_> = sessions
             .iter()
             .map(|session| {
-                render::json_value(&session.session_id, &session.report, session.unparsed)
+                render::json_value(&session.session_id, &session.report, session.parse_stats)
             })
             .collect();
         let value = if all {
@@ -103,7 +103,7 @@ fn run_report(all: bool, selected_id: Option<&str>, json: bool, compact: bool) -
                 render::table(
                     &session.session_id,
                     &session.report,
-                    session.unparsed,
+                    session.parse_stats,
                     compact,
                 )
             })
@@ -127,10 +127,14 @@ fn parse_session(path: &PathBuf) -> Result<SessionSummary> {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "unknown".to_owned());
+    let mut report = analyze::analyze(&events);
+    if stats.session_id_count > 1 {
+        report.resumed_session = analyze::ResumeStatus::Yes;
+    }
     Ok(SessionSummary {
         session_id,
-        report: analyze::analyze(&events),
-        unparsed: stats.unparsed,
+        report,
+        parse_stats: stats,
     })
 }
 
