@@ -102,12 +102,7 @@ fn parses_real_nested_tool_blocks_and_deduplicates_message_ids() {
         report.resumed_session,
         burnlog::analyze::ResumeStatus::Unknown
     );
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|finding| finding.name == "initial_context_large")
-    );
+    assert!(report.context_fact.is_some());
 }
 
 #[test]

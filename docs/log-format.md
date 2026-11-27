@@ -25,6 +25,19 @@ sessions; a parser must tolerate missing and additional fields.
 
 ## Fields relevant to a token report
 
+Assistant lines may contain one content block each while repeating the same
+`message.id`; usage must be counted once per ID, while every `tool_use` block
+must still be counted. A tool call has `id`, `name`, and `input`; Bash uses
+`input.command`, and Edit, Write, and Read use `input.file_path`. Tool results
+are blocks in user `message.content[]`, linked by `tool_use_id`, with `content`
+as a string or array and optional `is_error`. There is no result-size field.
+Result sizes are estimated as character count divided by four, using only text
+blocks in array content. Non-text content has unknown size.
+
+User lines without a `tool_result` block are user prompts. The documented
+`system/compact_boundary` subtype marks compaction boundaries. Other system
+records have no established usage or tool semantics.
+
 Paths are relative to one JSONL record. The path names and structures below were
 observed in the medium and/or large sample unless marked otherwise.
 
@@ -111,10 +124,12 @@ logs.
 
 ## Parser handling
 
-The sampled `attachment`, `cost-state`, `file-history-snapshot`,
+The `attachment`, `cost-state`, `custom-title`, `file-history-snapshot`,
 `file-history-delta`, `last-prompt`, `mode`, `permission-mode`, `api-request`,
-and `queue-operation` records carry no assistant usage or tool blocks and can
-be ignored by a token report. Other unrecognized record types are unexpected.
+`api-request-shape`, `api-request-blob`, `agent-name`, `queue-operation`, and
+`atis-latch` records are ignored by the report. Other unrecognized record
+types are counted by type name. Tool-result estimates and active duration are
+derived values and are labeled estimated in output.
 A known `user` or `assistant` record without a message object is malformed.
 Only `system/compact_boundary` is currently used; other system subtypes are
 unexpected because their usage and tool behavior are not established here.

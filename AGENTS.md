@@ -28,3 +28,5 @@ RULES:
 - Commits: conventional commits, one logical change each.
 - Estimated values (not read from logs) must be labeled "estimated" in output.
 - Tool blocks live in `message.content[]`; link results by `tool_use_id` and deduplicate assistant usage by `message.id`.
+- Assistant log lines may hold one content block each while repeating `message.id`; count usage once per ID and count every tool-use block.
+- Tool-result sizes are estimated from returned text length and must be labeled estimated.

@@ -2,10 +2,9 @@
 
 ## [0.1.1] - 2026-11-27
 
-- Parse tool blocks nested in `message.content`, link tool results by `tool_use_id`, and deduplicate assistant usage by `message.id`.
-- Break down unparsed lines by reason and report resume detection.
-- Label context growth as "first observed turn" and empty sections as "none found (0 tool blocks parsed)".
-- Format numbers with separators and add turns, duration, and cache-read share to the report header.
+- Count tool calls per block while deduplicating usage by assistant `message.id`; estimate linked result sizes from text length.
+- Report user prompts, assistant messages, tool calls, session span, estimated active time, and measured context threshold facts.
+- Use privacy-safe tool labels, repeated Read/Edit targets, boundary counts, and typed ignored/unparsed breakdowns.
 
 ## [0.1.0] - 2026-11-26
 

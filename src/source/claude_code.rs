@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead};
@@ -11,8 +11,9 @@ use thiserror::Error;
 use crate::model::{Event, EventKind, TokenUsage};
 
 const PROJECTS_DIR_ENV: &str = "BURNLOG_CLAUDE_PROJECTS_DIR";
+pub const CHARS_PER_TOKEN: usize = 4;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ParseStats {
     pub parsed: usize,
     pub unparsed: usize,
@@ -22,6 +23,8 @@ pub struct ParseStats {
     pub other: usize,
     pub ignored: usize,
     pub session_id_count: usize,
+    pub unknown_types: BTreeMap<String, usize>,
+    pub ignored_types: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Error)]
@@ -63,16 +66,28 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
         }
         if is_ignored_type(record_type) {
             stats.ignored += 1;
+            *stats
+                .ignored_types
+                .entry(record_type.to_owned())
+                .or_default() += 1;
             continue;
         }
         if record_type == "system"
             && record.get("subtype").and_then(Value::as_str) != Some("compact_boundary")
         {
             stats.unknown_type += 1;
+            *stats
+                .unknown_types
+                .entry(record_type.to_owned())
+                .or_default() += 1;
             continue;
         }
         if !matches!(record_type, "user" | "assistant" | "system") {
             stats.unknown_type += 1;
+            *stats
+                .unknown_types
+                .entry(record_type.to_owned())
+                .or_default() += 1;
             continue;
         }
         let record = Value::Object(record.clone());
@@ -82,13 +97,11 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
             stats.deserialize_failed += 1;
             continue;
         }
-        if record_type == "assistant"
-            && let Some(message_id) = record.pointer("/message/id").and_then(Value::as_str)
-            && !seen_message_ids.insert(message_id.to_owned())
-        {
-            stats.parsed += 1;
-            continue;
-        }
+        let first_assistant_record = record_type != "assistant"
+            || record
+                .pointer("/message/id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| seen_message_ids.insert(id.to_owned()));
 
         let session_id =
             string_field(&record, "sessionId").or_else(|| string_field(&record, "session_id"));
@@ -97,7 +110,13 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
         let mut row_events = match record_type {
             "assistant" => {
                 remember_tools(&record, &mut tools);
-                assistant_events(&record, session_id, turn_index, timestamp)
+                assistant_events(
+                    &record,
+                    session_id,
+                    turn_index,
+                    timestamp,
+                    first_assistant_record,
+                )
             }
             "user" => user_events(&record, session_id.clone(), turn_index, timestamp, &tools),
             "system"
@@ -137,6 +156,11 @@ fn is_ignored_type(record_type: &str) -> bool {
         record_type,
         "attachment"
             | "cost-state"
+            | "custom-title"
+            | "agent-name"
+            | "api-request-shape"
+            | "api-request-blob"
+            | "atis-latch"
             | "file-history-snapshot"
             | "file-history-delta"
             | "last-prompt"
@@ -196,8 +220,11 @@ fn assistant_events(
     session_id: Option<String>,
     turn_index: usize,
     timestamp: Option<String>,
+    first_assistant_record: bool,
 ) -> Vec<Event> {
     let usage = token_usage(record);
+    let assistant_message_id =
+        string_field(record.pointer("/message").unwrap_or(&Value::Null), "id");
     let content = record.pointer("/message/content").and_then(Value::as_array);
     let mut events = Vec::new();
     if let Some(content) = content {
@@ -211,13 +238,17 @@ fn assistant_events(
                         EventKind::ToolCall,
                     );
                     item.tool_name = string_field(block, "name");
+                    item.tool_label = item
+                        .tool_name
+                        .as_deref()
+                        .and_then(|name| tool_label(name, block));
                     item.target_path = block
                         .pointer("/input/file_path")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
                     events.push(item);
                 }
-                Some("text") => events.push(event(
+                Some("text") if first_assistant_record => events.push(event(
                     session_id.clone(),
                     turn_index,
                     timestamp.clone(),
@@ -227,7 +258,7 @@ fn assistant_events(
             }
         }
     }
-    if events.is_empty() {
+    if first_assistant_record && events.is_empty() {
         events.push(event(
             session_id,
             turn_index,
@@ -235,7 +266,12 @@ fn assistant_events(
             EventKind::AssistantMessage,
         ));
     }
-    events[0].usage = usage;
+    if first_assistant_record && let Some(first) = events.first_mut() {
+        first.usage = usage;
+    }
+    for item in &mut events {
+        item.assistant_message_id = assistant_message_id.clone();
+    }
     events
 }
 
@@ -244,7 +280,7 @@ fn user_events(
     session_id: Option<String>,
     turn_index: usize,
     timestamp: Option<String>,
-    tools: &HashMap<String, (String, Option<String>)>,
+    tools: &HashMap<String, (String, Option<String>, Option<String>)>,
 ) -> Vec<Event> {
     let content = record.pointer("/message/content");
     let blocks = content.and_then(Value::as_array);
@@ -274,14 +310,20 @@ fn user_events(
                 .get("tool_use_id")
                 .and_then(Value::as_str)
                 .and_then(|tool_id| tools.get(tool_id));
-            item.tool_name = tool.map(|(name, _)| name.clone());
-            item.target_path = tool.and_then(|(_, path)| path.clone());
+            item.tool_name = tool.map(|(name, _, _)| name.clone());
+            item.target_path = tool.and_then(|(_, path, _)| path.clone());
+            item.tool_label = tool.and_then(|(_, _, label)| label.clone());
+            item.size_tokens = result_size(block);
+            item.estimated = item.size_tokens.is_some();
             item
         })
         .collect()
 }
 
-fn remember_tools(record: &Value, tools: &mut HashMap<String, (String, Option<String>)>) {
+fn remember_tools(
+    record: &Value,
+    tools: &mut HashMap<String, (String, Option<String>, Option<String>)>,
+) {
     let Some(blocks) = record.pointer("/message/content").and_then(Value::as_array) else {
         return;
     };
@@ -300,10 +342,68 @@ fn remember_tools(record: &Value, tools: &mut HashMap<String, (String, Option<St
                         .pointer("/input/file_path")
                         .and_then(Value::as_str)
                         .map(str::to_owned),
+                    block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .and_then(|name| tool_label(name, block)),
                 ),
             );
         }
     }
+}
+
+fn tool_label(name: &str, block: &Value) -> Option<String> {
+    match name {
+        "Bash" => block
+            .pointer("/input/command")
+            .and_then(Value::as_str)
+            .map(bash_label),
+        "Read" | "Edit" | "Write" => None,
+        _ => Some(name.to_owned()),
+    }
+}
+
+fn result_size(block: &Value) -> Option<u64> {
+    let content = block.get("content")?;
+    let chars = if let Some(text) = content.as_str() {
+        text.chars().count()
+    } else {
+        let blocks = content.as_array()?;
+        if blocks
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) != Some("text"))
+        {
+            return None;
+        }
+        blocks
+            .iter()
+            .map(|item| {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text.chars().count())
+            })
+            .sum::<Option<usize>>()?
+    };
+    Some((chars / CHARS_PER_TOKEN) as u64)
+}
+
+fn bash_label(command: &str) -> String {
+    command
+        .split_whitespace()
+        .filter(|token| !token.contains('='))
+        .take(2)
+        .map(|token| {
+            if token.starts_with("http://") || token.starts_with("https://") {
+                "[url]"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(30)
+        .collect()
 }
 
 fn token_usage(record: &Value) -> TokenUsage {
@@ -338,9 +438,11 @@ fn event(
         session_id,
         turn_index,
         timestamp,
+        assistant_message_id: None,
         kind,
         usage: TokenUsage::default(),
         tool_name: None,
+        tool_label: None,
         target_path: None,
         size_tokens: None,
         estimated: false,

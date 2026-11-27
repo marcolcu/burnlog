@@ -79,7 +79,11 @@ fn run_report(all: bool, selected_id: Option<&str>, json: bool, compact: bool) -
         let values: Vec<_> = sessions
             .iter()
             .map(|session| {
-                render::json_value(&session.session_id, &session.report, session.parse_stats)
+                render::json_value(
+                    &session.session_id,
+                    &session.report,
+                    session.parse_stats.clone(),
+                )
             })
             .collect();
         let value = if all {
@@ -103,7 +107,7 @@ fn run_report(all: bool, selected_id: Option<&str>, json: bool, compact: bool) -
                 render::table(
                     &session.session_id,
                     &session.report,
-                    session.parse_stats,
+                    session.parse_stats.clone(),
                     compact,
                 )
             })

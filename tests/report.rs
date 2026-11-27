@@ -83,7 +83,7 @@ fn report_table_shows_sections_and_unparsed_footer() {
         "CONTEXT GROWTH",
         "TOP TOOL RESULTS",
         "REPEATED READS",
-        "FINDINGS",
+        "REPEATED EDITS",
     ] {
         assert!(stdout.contains(section), "missing {section}: {stdout}");
     }
@@ -156,30 +156,99 @@ fn missing_log_directory_has_readable_error() {
 }
 
 #[test]
-fn header_reports_turns_duration_cache_share_and_unknown_resume() {
+fn header_reports_counts_span_cache_share_and_unknown_resume() {
     let input = fs::read_to_string("tests/fixtures/claude-session-real-structure.jsonl").unwrap();
     let (events, stats) = parse(Cursor::new(input)).unwrap();
     let report = analyze(&events);
     let output = table("synthetic", &report, stats, false);
-    assert!(output.contains("Turns: 1"));
-    assert!(output.contains("Duration: 5s"));
+    assert!(output.contains("User prompts: 1 | Assistant messages: 2 | Tool calls: 2"));
+    assert!(output.contains("Span: 0h 0m"));
     assert!(output.contains("Cache-read share: 33.1%"));
     assert!(output.contains("Resumed session: unknown"));
     assert!(output.contains("first observed turn: 151,003"));
     assert!(output.contains("input: 200,001"));
-    assert!(!output.contains("initial_context_large"));
+    assert!(output.contains("boundaries detected: 0"));
 }
 
 #[test]
 fn tool_sections_explain_empty_results() {
     let report = analyze(&[]);
     let empty = table("empty", &report, ParseStats::default(), false);
-    assert!(empty.contains("none found (0 tool blocks parsed)"));
+    assert!(empty.contains("no Read tool calls in this session"));
 
     let (events, stats) = parse(Cursor::new(
         fs::read_to_string("tests/fixtures/claude-session-tool.jsonl").unwrap(),
     ))
     .unwrap();
     let output = table("one-read", &analyze(&events), stats, false);
-    assert!(output.contains("none (2 tool blocks parsed, none qualified)"));
+    assert!(output.contains("none (1 Read calls, 0 repeated)"));
+}
+
+#[test]
+fn real_shape_fixture_reports_calls_safe_labels_and_estimated_results() {
+    let input = fs::read_to_string("tests/fixtures/claude-session-real-structure-2.jsonl").unwrap();
+    let (events, stats) = parse(Cursor::new(input)).unwrap();
+    let report = analyze(&events);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == burnlog::model::EventKind::ToolCall)
+            .count(),
+        6
+    );
+    assert_eq!(report.tool_calls, 6);
+    assert_eq!(report.assistant_messages, 7);
+    assert_eq!(report.user_prompts, 2);
+    assert_eq!(report.top_tool_results.len(), 3);
+    assert_eq!(report.unavailable_tool_result_sizes, 2);
+    assert_eq!(report.top_tool_results[0].size, 5);
+    assert!(report.top_tool_results[0].estimated);
+    assert!(
+        report
+            .top_tool_results
+            .iter()
+            .any(|item| item.tool_name.as_deref() == Some("mcp__search")
+                && item.label.as_deref() == Some("mcp__search")
+                && item.size == 2)
+    );
+    assert_eq!(report.repeated_edits[0].count, 2);
+    assert_eq!(report.repeated_reads[0].count, 2);
+    assert_eq!(report.span_seconds, Some(51));
+    assert_eq!(report.active_seconds, Some(51));
+    assert!(report.context_fact.is_some());
+    assert_eq!(stats.ignored, 14);
+
+    let output = table("synthetic", &report, stats, false);
+    assert!(output.contains("User prompts: 2 | Assistant messages: 7 | Tool calls: 6"));
+    assert!(output.contains("Span: 0h 0m | Active (est.): 0h 0m"));
+    assert!(output.contains("curl [url]"));
+    assert!(!output.contains("API_KEY"));
+    assert!(!output.contains("abc"));
+    assert!(!output.contains("x.example"));
+    assert!(!output.contains("/workspace"));
+    assert!(output.contains("(est.)"));
+    assert!(output.contains("size unavailable for 2 blocks"));
+    assert!(output.contains("REPEATED EDITS"));
+    assert!(output.contains("boundaries detected: 0"));
+    assert!(output.contains("+3 more"));
+    assert!(output.contains("future-one: 1"));
+    assert!(output.contains("Ignored lines: 14"));
+}
+
+#[test]
+fn json_names_counts_and_marks_estimated_sizes() {
+    let input = fs::read_to_string("tests/fixtures/claude-session-real-structure-2.jsonl").unwrap();
+    let (events, stats) = parse(Cursor::new(input)).unwrap();
+    let value = burnlog::render::json_value("synthetic", &analyze(&events), stats);
+    assert_eq!(value["user_prompts"], 2);
+    assert_eq!(value["assistant_messages"], 7);
+    assert_eq!(value["tool_calls"], 6);
+    assert_eq!(value["top_tool_results"][0]["estimated"], true);
+    assert_eq!(value["top_tool_results"][0]["size"], 5);
+    assert_eq!(value["active_seconds"], 51);
+    assert_eq!(value["active_seconds_estimated"], true);
+    assert_eq!(value["ignored_types"]["custom-title"], 1);
+    assert!(value.get("turns").is_none());
+    assert!(value.get("duration_seconds").is_none());
+    assert_eq!(value["unparsed_breakdown"]["types"]["future-one"], 1);
 }
