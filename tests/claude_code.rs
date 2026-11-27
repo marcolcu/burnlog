@@ -120,6 +120,18 @@ fn multiple_session_ids_are_resume_evidence() {
 }
 
 #[test]
+fn session_ids_on_ignored_metadata_count_as_resume_evidence() {
+    let input = r#"{"type":"assistant","sessionId":"one","message":{"id":"m1","content":[]}}
+{"type":"attachment","session_id":"two"}"#;
+    let (events, stats) = parse(Cursor::new(input)).unwrap();
+    assert_eq!(stats.session_id_count, 2);
+    assert_eq!(
+        analyze(&events).resumed_session,
+        burnlog::analyze::ResumeStatus::Unknown
+    );
+}
+
+#[test]
 fn parse_stats_break_down_unparsed_reasons() {
     let input = "{bad json}\n[]\n{\"type\":\"future-event\"}\n{\"type\":\"assistant\"}\n";
     let (_, stats) = parse(Cursor::new(input)).unwrap();

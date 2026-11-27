@@ -120,7 +120,9 @@ Only `system/compact_boundary` is currently used; other system subtypes are
 unexpected because their usage and tool behavior are not established here.
 Multiple distinct session IDs in one file are direct evidence of a resumed
 session. The sampled format provides no reliable evidence that a single-ID
-file was not resumed, so its resume status is unknown.
+file was not resumed, so its resume status is unknown. No affirmative
+non-resume marker is documented; the current parser therefore reports `yes`
+or `unknown`, never infers `no` from missing evidence.
 
 Tool calls and results are nested in their respective `message.content[]`
 arrays. A result's `tool_use_id` links it to a call's `id`; that link also
