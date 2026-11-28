@@ -18,6 +18,8 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
     let mut session_id = None;
     let mut turn = 0;
     let mut responses = HashSet::new();
+    let mut user_items = HashSet::new();
+    let mut legacy_user_messages = false;
     let mut tools = HashMap::new();
     let mut usage_events = Vec::new();
     let mut snapshot = None;
@@ -55,12 +57,38 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
                 stats.session_id_count = usize::from(session_id.is_some());
             }
             "event_msg" if payload["type"] == "user_message" => {
+                legacy_user_messages = true;
                 turn += 1;
                 item.turn_index = turn;
                 item.kind = EventKind::UserPrompt;
                 events.push(item);
             }
+            "event_msg"
+                if payload["type"] == "item_completed"
+                    && payload["item"]["type"] == "UserMessage" =>
+            {
+                if let Some(id) = payload.pointer("/item/id").and_then(Value::as_str) {
+                    if user_items.insert(id.to_owned()) {
+                        turn += 1;
+                        item.turn_index = turn;
+                        item.kind = EventKind::UserPrompt;
+                        events.push(item);
+                    }
+                } else {
+                    stats.deserialize_failed += 1;
+                    continue;
+                }
+            }
             "event_msg" if payload["type"] == "token_count" => {
+                if let Some(size) = payload
+                    .pointer("/info/last_token_usage/total_tokens")
+                    .and_then(Value::as_u64)
+                {
+                    let mut context = item.clone();
+                    context.kind = EventKind::Context;
+                    context.size_tokens = Some(size);
+                    events.push(context);
+                }
                 if let Some(value) = payload
                     .pointer("/info/total_token_usage")
                     .filter(|value| value.is_object())
@@ -118,10 +146,7 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
                     .and_then(Value::as_str)
                     .and_then(|id| tools.get(id))
                     .cloned();
-                item.size_tokens = payload
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .map(|text| (text.chars().count() / 4) as u64);
+                item.size_tokens = payload.get("output").and_then(output_size);
                 item.estimated = item.size_tokens.is_some();
                 events.push(item);
             }
@@ -173,7 +198,15 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
         }
         stats.parsed += 1;
     }
+    stats.prompt_count_uncertain = (legacy_user_messages && !user_items.is_empty()) || turn == 0;
     stats.usage_mixed_sources = !usage_events.is_empty() && snapshot.is_some();
+    stats.usage_coverage_basis = if !usage_events.is_empty() {
+        Some("response_records")
+    } else if snapshot.is_some() {
+        Some("cumulative_snapshot")
+    } else {
+        None
+    };
     if usage_events.is_empty()
         && let Some(item) = snapshot
     {
@@ -189,6 +222,22 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
     stats.unparsed =
         stats.invalid_json + stats.unknown_type + stats.deserialize_failed + stats.other;
     Ok((events, stats))
+}
+
+fn output_size(output: &Value) -> Option<u64> {
+    let chars = if let Some(text) = output.as_str() {
+        text.chars().count()
+    } else {
+        output
+            .as_array()?
+            .iter()
+            .map(|item| {
+                (item.get("type")?.as_str()? == "input_text").then_some(())?;
+                Some(item.get("text")?.as_str()?.chars().count())
+            })
+            .sum::<Option<usize>>()?
+    };
+    Some((chars / 4) as u64)
 }
 
 fn usage(value: &Value) -> TokenUsage {

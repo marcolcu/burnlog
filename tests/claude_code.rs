@@ -6,6 +6,16 @@ use burnlog::analyze::analyze;
 use burnlog::model::EventKind;
 use burnlog::source::claude_code::{discover_sessions_with_root, parse};
 
+#[test]
+fn ai_title_is_ignored_metadata() {
+    let (_, stats) = parse(std::io::Cursor::new(
+        r#"{"type":"ai-title","aiTitle":"private"}"#,
+    ))
+    .unwrap();
+    assert_eq!(stats.ignored, 1);
+    assert_eq!(stats.unparsed, 0);
+}
+
 fn fixture(name: &str) -> String {
     fs::read_to_string(Path::new("tests/fixtures").join(name)).unwrap()
 }

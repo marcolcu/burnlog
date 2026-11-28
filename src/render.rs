@@ -9,6 +9,7 @@ pub fn json_value(session_id: &str, report: &SessionReport, stats: ParseStats) -
     json!({
         "session_id": session_id,
         "user_prompts": report.user_prompts,
+        "prompt_count_uncertain": stats.prompt_count_uncertain,
         "assistant_messages": report.assistant_messages,
         "tool_calls": report.tool_calls,
         "span_seconds": report.span_seconds,
@@ -44,6 +45,7 @@ pub fn json_value(session_id: &str, report: &SessionReport, stats: ParseStats) -
         "unparsed": stats.unparsed,
         "unparsed_percent": unparsed_percent(&stats),
         "usage_mixed_sources": stats.usage_mixed_sources,
+        "usage_coverage_basis": stats.usage_coverage_basis,
         "usage_coverage": {
             "messages": stats.usage_messages,
             "input": stats.usage_input,
@@ -94,6 +96,9 @@ pub fn table(session_id: &str, report: &SessionReport, stats: ParseStats, compac
             crate::analyze::ResumeStatus::Unknown => "unknown",
         }
     ));
+    if stats.prompt_count_uncertain {
+        lines.push("Prompt count may be incomplete or include duplicates".to_owned());
+    }
     section(&mut lines, "TOKENS", compact);
     lines.push(format!(
         "  input: {}",
@@ -132,6 +137,15 @@ pub fn table(session_id: &str, report: &SessionReport, stats: ParseStats, compac
             "  Mixed usage formats: totals use response records only and may omit earlier usage"
                 .to_owned(),
         );
+    }
+    match stats.usage_coverage_basis {
+        Some("response_records") => lines.push(
+            "  Usage basis: response records; coverage of all responses is unknown".to_owned(),
+        ),
+        Some("cumulative_snapshot") => lines.push(
+            "  Usage basis: cumulative snapshot; per-response coverage is unknown".to_owned(),
+        ),
+        _ => {}
     }
     lines.push(format!(
         "  Usage coverage (observations): input {}/{}, output {}/{}, cache read {}/{}, cache write {}/{}; incomplete totals include only observed values",

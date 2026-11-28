@@ -1,8 +1,6 @@
 # burnlog
 
-AI coding sessions can use many tokens on context, tool results, and repeated file reads, but the logs make those costs hard to see. burnlog summarizes Claude Code session token usage and related activity in a local report.
-
-burnlog runs locally, reads Claude Code logs without changing them, and makes no network calls. It reports metadata and token counts; it never prints prompts or file contents.
+burnlog reports token usage and activity in Claude Code and Codex sessions. It runs locally, reads logs without modifying them, and makes no network calls. Reports include metadata and token counts, not prompts or file contents.
 
 ## Install
 
@@ -12,64 +10,38 @@ Install the published release with Cargo:
 cargo install burnlog
 ```
 
-Or build from a checkout:
-
-```sh
-cargo install --path .
-```
-
-## Update
-
-Update an installed release with `cargo install burnlog --force`, or download the latest binary from [GitHub Releases](https://github.com/marcolcu/burnlog/releases/latest).
+To update an existing installation, run `cargo install burnlog --force`. To install from a checkout, run `cargo install --path .`.
 
 ## Usage
 
-Run a report from a project directory that has Claude Code session logs:
+Run burnlog from the project directory where you used the coding assistant. The default source is Claude Code:
 
 ```sh
 burnlog report
 ```
 
-By default, burnlog finds the most recent session for the current directory. Use `--all` to report every session, pass a session ID to select one, or add `--json` for machine-readable output.
+To report the latest Codex session for the current project, select the Codex source:
 
-This output was produced by running `burnlog report` against the synthetic fixture `tests/fixtures/claude-session-basic.jsonl`:
-
-```text
-SESSION fixture-session-basic
-Turns: 1 | Duration: 1s | Cache-read share: 17.6%
-Resumed session: unknown
-
-TOKENS
-  input: 12
-  output: 5
-  cache read: 3
-  cache write: 2
-
-CONTEXT GROWTH
-  first observed turn: 17
-  middle: 17
-  end: 17
-
-TOP TOOL RESULTS
-  none found (0 tool blocks parsed)
-
-REPEATED READS
-  none found (0 tool blocks parsed)
-
-FINDINGS
-  none
-Unparsed lines: 0 (invalid JSON: 0, unknown type: 0, deserialize failed: 0, other: 0)
-Ignored lines: 0
+```sh
+burnlog report --source codex
 ```
 
-## Limits
+For either source, pass a session ID to select a session, or use `--all` to report every session for the current project. Add `--json` for machine-readable output and `--compact` to remove extra whitespace:
 
-- v0.1.0 reads Claude Code session logs only.
-- Reports cover token totals, context growth, tool results, repeated reads, and findings. Token-to-dollar estimates are not provided.
-- Session logs are discovered for the current project under `~/.claude/projects`. Set `BURNLOG_CLAUDE_PROJECTS_DIR` to use another Claude projects directory.
-- Unknown or malformed log lines are skipped and counted as unparsed.
+```sh
+burnlog report --source codex SESSION_ID
+burnlog report --source codex --all
+burnlog report --source codex --json
+burnlog report --source claude --all --json --compact
+```
 
-## Roadmap
+Claude Code sessions are discovered under `~/.claude/projects`. Set `BURNLOG_CLAUDE_PROJECTS_DIR` to use a different projects directory. Codex sessions are discovered under `$CODEX_HOME/sessions`, or `~/.codex/sessions` when `CODEX_HOME` is unset. Codex archived sessions are not included.
 
-- Add more report options based on user feedback.
-- Consider support for other coding assistants after the Claude Code format is stable.
+## Report limits
+
+- Unknown or malformed log lines are skipped and counted as unparsed. Usage coverage shows which token fields were present in the records burnlog counted.
+- Active time and tool-result token sizes are estimates. Token-to-dollar estimates are not provided.
+- Codex does not report cache-write usage. When a Codex log contains both cumulative snapshots and per-response usage records, burnlog uses the per-response records and warns that earlier usage may be missing.
+- Reports can include tool names and paths. Review a report before sharing it.
+
+See [Codex session reports](docs/codex-format.md) for format details.

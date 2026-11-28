@@ -30,6 +30,8 @@ pub struct ParseStats {
     pub usage_cache_write: usize,
     pub cache_write_unavailable: bool,
     pub usage_mixed_sources: bool,
+    pub usage_coverage_basis: Option<&'static str>,
+    pub prompt_count_uncertain: bool,
     pub unknown_types: BTreeMap<String, usize>,
     pub ignored_types: BTreeMap<String, usize>,
 }
@@ -171,6 +173,7 @@ fn is_ignored_type(record_type: &str) -> bool {
     matches!(
         record_type,
         "attachment"
+            | "ai-title"
             | "cost-state"
             | "custom-title"
             | "agent-name"

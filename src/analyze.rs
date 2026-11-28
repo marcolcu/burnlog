@@ -100,6 +100,11 @@ pub fn analyze(events: &[Event]) -> SessionReport {
         if event.kind == EventKind::Boundary {
             report.boundary_count += 1;
         }
+        if event.kind == EventKind::Context
+            && let Some(size) = event.size_tokens
+        {
+            contexts.insert(event.turn_index, size);
+        }
         if matches!(
             event.kind,
             EventKind::AssistantMessage | EventKind::ToolCall
