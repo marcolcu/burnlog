@@ -392,18 +392,32 @@ fn bash_label(command: &str) -> String {
         .split_whitespace()
         .filter(|token| !token.contains('='))
         .take(2)
-        .map(|token| {
-            if token.starts_with("http://") || token.starts_with("https://") {
-                "[url]"
-            } else {
-                token
-            }
-        })
+        .map(safe_bash_token)
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
         .take(30)
         .collect()
+}
+
+fn safe_bash_token(token: &str) -> String {
+    if token.starts_with("http://") || token.starts_with("https://") {
+        return "[url]".to_owned();
+    }
+    let path = Path::new(token.trim_matches(|character| matches!(character, '\'' | '"')));
+    if !path.is_absolute() {
+        return token.to_owned();
+    }
+    let mut parts: Vec<_> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let start = parts.len().saturating_sub(2);
+    parts.drain(..start);
+    parts.join("/")
 }
 
 fn token_usage(record: &Value) -> TokenUsage {
@@ -446,5 +460,18 @@ fn event(
         target_path: None,
         size_tokens: None,
         estimated: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bash_label;
+
+    #[test]
+    fn bash_label_redacts_absolute_paths() {
+        let label = bash_label("cd /Users/marcomelandri/Documents/project/burnlog");
+        assert_eq!(label, "cd project/burnlog");
+        assert!(!label.starts_with('/'));
+        assert!(label.chars().count() <= 30);
     }
 }
