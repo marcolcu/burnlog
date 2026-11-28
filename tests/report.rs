@@ -88,7 +88,7 @@ fn cli_reports_package_version() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "burnlog 0.1.2\n");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "burnlog 0.1.3\n");
 }
 
 #[test]
