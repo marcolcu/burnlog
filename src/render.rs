@@ -15,12 +15,12 @@ pub fn json_value(session_id: &str, report: &SessionReport, stats: ParseStats) -
         "active_seconds": report.active_seconds,
         "active_seconds_estimated": true,
         "resumed_session": match report.resumed_session { crate::analyze::ResumeStatus::Yes => "yes", crate::analyze::ResumeStatus::No => "no", crate::analyze::ResumeStatus::Unknown => "unknown" },
-        "cache_read_share_percent": cache_read_share(report),
+        "cache_read_share_percent": cache_read_share(report, &stats),
         "token_totals": {
-            "input": report.token_totals.input,
-            "output": report.token_totals.output,
-            "cache_read": report.token_totals.cache_read,
-            "cache_write": report.token_totals.cache_write,
+            "input": available_total(report.token_totals.input, stats.usage_input, &stats),
+            "output": available_total(report.token_totals.output, stats.usage_output, &stats),
+            "cache_read": available_total(report.token_totals.cache_read, stats.usage_cache_read, &stats),
+            "cache_write": (!stats.cache_write_unavailable).then_some(report.token_totals.cache_write),
         },
         "context_growth": report.context_growth,
         "initial_context_size": report.initial_context_size,
@@ -42,6 +42,15 @@ pub fn json_value(session_id: &str, report: &SessionReport, stats: ParseStats) -
         "repeated_reads": repeated_json(&report.repeated_reads),
         "repeated_edits": repeated_json(&report.repeated_edits),
         "unparsed": stats.unparsed,
+        "unparsed_percent": unparsed_percent(&stats),
+        "usage_mixed_sources": stats.usage_mixed_sources,
+        "usage_coverage": {
+            "messages": stats.usage_messages,
+            "input": stats.usage_input,
+            "output": stats.usage_output,
+            "cache_read": stats.usage_cache_read,
+            "cache_write": stats.usage_cache_write,
+        },
         "unparsed_breakdown": {
             "invalid_json": stats.invalid_json,
             "unknown_type": stats.unknown_type,
@@ -75,7 +84,7 @@ pub fn table(session_id: &str, report: &SessionReport, stats: ParseStats, compac
         format_number(report.tool_calls as u64),
         duration(report.span_seconds),
         duration(report.active_seconds),
-        cache_read_share(report).map_or_else(|| "n/a".to_owned(), |value| format!("{value:.1}%"))
+        cache_read_share(report, &stats).map_or_else(|| "n/a".to_owned(), |value| format!("{value:.1}%"))
     ));
     lines.push(format!(
         "Resumed session: {}",
@@ -88,19 +97,46 @@ pub fn table(session_id: &str, report: &SessionReport, stats: ParseStats, compac
     section(&mut lines, "TOKENS", compact);
     lines.push(format!(
         "  input: {}",
-        format_number(report.token_totals.input)
+        display_option(available_total(
+            report.token_totals.input,
+            stats.usage_input,
+            &stats
+        ))
     ));
     lines.push(format!(
         "  output: {}",
-        format_number(report.token_totals.output)
+        display_option(available_total(
+            report.token_totals.output,
+            stats.usage_output,
+            &stats
+        ))
     ));
     lines.push(format!(
         "  cache read: {}",
-        format_number(report.token_totals.cache_read)
+        display_option(available_total(
+            report.token_totals.cache_read,
+            stats.usage_cache_read,
+            &stats
+        ))
     ));
     lines.push(format!(
         "  cache write: {}",
-        format_number(report.token_totals.cache_write)
+        if stats.cache_write_unavailable {
+            "n/a".to_owned()
+        } else {
+            format_number(report.token_totals.cache_write)
+        }
+    ));
+    if stats.usage_mixed_sources {
+        lines.push(
+            "  Mixed usage formats: totals use response records only and may omit earlier usage"
+                .to_owned(),
+        );
+    }
+    lines.push(format!(
+        "  Usage coverage (observations): input {}/{}, output {}/{}, cache read {}/{}, cache write {}/{}; incomplete totals include only observed values",
+        stats.usage_input, stats.usage_messages, stats.usage_output, stats.usage_messages,
+        stats.usage_cache_read, stats.usage_messages, stats.usage_cache_write, stats.usage_messages
     ));
 
     section(&mut lines, "CONTEXT GROWTH", compact);
@@ -175,11 +211,24 @@ pub fn table(session_id: &str, report: &SessionReport, stats: ParseStats, compac
         format_number(stats.other as u64)
     ));
     lines.push(format!(
+        "Unparsed share: {}",
+        unparsed_percent(&stats).map_or_else(|| "n/a".to_owned(), |value| format!("{value:.1}%"))
+    ));
+    lines.push(format!(
         "Ignored lines: {} ({})",
         format_number(stats.ignored as u64),
         type_breakdown(&stats.ignored_types)
     ));
     lines.join("\n")
+}
+
+fn unparsed_percent(stats: &ParseStats) -> Option<f64> {
+    let total = stats.parsed + stats.unparsed + stats.ignored;
+    (total > 0).then(|| stats.unparsed as f64 * 100.0 / total as f64)
+}
+
+fn available_total(total: u64, observations: usize, stats: &ParseStats) -> Option<u64> {
+    (!stats.cache_write_unavailable || observations > 0).then_some(total)
 }
 
 fn repeated_lines(lines: &mut Vec<String>, values: &[crate::analyze::RepeatedRead], noun: &str) {
@@ -223,7 +272,14 @@ fn duration(seconds: Option<u64>) -> String {
         |seconds| format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60),
     )
 }
-fn cache_read_share(report: &SessionReport) -> Option<f64> {
+fn cache_read_share(report: &SessionReport, stats: &ParseStats) -> Option<f64> {
+    if stats.usage_messages == 0
+        || stats.usage_input != stats.usage_messages
+        || stats.usage_cache_read != stats.usage_messages
+        || (!stats.cache_write_unavailable && stats.usage_cache_write != stats.usage_messages)
+    {
+        return None;
+    }
     let input_side = report.token_totals.input
         + report.token_totals.cache_read
         + report.token_totals.cache_write;

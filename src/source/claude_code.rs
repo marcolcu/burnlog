@@ -23,6 +23,13 @@ pub struct ParseStats {
     pub other: usize,
     pub ignored: usize,
     pub session_id_count: usize,
+    pub usage_messages: usize,
+    pub usage_input: usize,
+    pub usage_output: usize,
+    pub usage_cache_read: usize,
+    pub usage_cache_write: usize,
+    pub cache_write_unavailable: bool,
+    pub usage_mixed_sources: bool,
     pub unknown_types: BTreeMap<String, usize>,
     pub ignored_types: BTreeMap<String, usize>,
 }
@@ -102,6 +109,15 @@ pub fn parse<R: BufRead>(reader: R) -> Result<(Vec<Event>, ParseStats), ParseErr
                 .pointer("/message/id")
                 .and_then(Value::as_str)
                 .is_none_or(|id| seen_message_ids.insert(id.to_owned()));
+
+        if record_type == "assistant" && first_assistant_record {
+            let usage = token_usage(&record);
+            stats.usage_messages += 1;
+            stats.usage_input += usize::from(usage.input_tokens.is_some());
+            stats.usage_output += usize::from(usage.output_tokens.is_some());
+            stats.usage_cache_read += usize::from(usage.cache_read_input_tokens.is_some());
+            stats.usage_cache_write += usize::from(usage.cache_creation_input_tokens.is_some());
+        }
 
         let session_id =
             string_field(&record, "sessionId").or_else(|| string_field(&record, "session_id"));

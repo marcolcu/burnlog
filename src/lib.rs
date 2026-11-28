@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 pub mod analyze;
 pub mod model;
@@ -23,6 +23,9 @@ struct Cli {
 enum Command {
     /// Analyze session logs and report token usage.
     Report {
+        /// Log source to analyze.
+        #[arg(long, value_enum, default_value_t = LogSource::Claude)]
+        source: LogSource,
         /// Report all sessions, sorted by total tokens descending.
         #[arg(long, conflicts_with = "session_id")]
         all: bool,
@@ -37,6 +40,12 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LogSource {
+    Claude,
+    Codex,
+}
+
 struct SessionSummary {
     session_id: String,
     report: analyze::SessionReport,
@@ -46,23 +55,40 @@ struct SessionSummary {
 pub fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Report {
+            source,
             all,
             session_id,
             json,
             compact,
-        } => run_report(all, session_id.as_deref(), json, compact),
+        } => run_report(source, all, session_id.as_deref(), json, compact),
     }
 }
 
-fn run_report(all: bool, selected_id: Option<&str>, json: bool, compact: bool) -> Result<()> {
-    let paths = source::claude_code::discover_sessions(&std::env::current_dir()?)?;
+fn run_report(
+    source: LogSource,
+    all: bool,
+    selected_id: Option<&str>,
+    json: bool,
+    compact: bool,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let paths = match source {
+        LogSource::Claude => source::claude_code::discover_sessions(&cwd)?,
+        LogSource::Codex => source::codex::discover_sessions(&cwd)?,
+    };
     if paths.is_empty() {
-        bail!("No Claude Code session logs found for the current directory.");
+        bail!(
+            "No {} session logs found for the current directory.",
+            match source {
+                LogSource::Claude => "Claude Code",
+                LogSource::Codex => "Codex",
+            }
+        );
     }
 
     let mut sessions = paths
         .iter()
-        .map(parse_session)
+        .map(|path| parse_session(path, source))
         .collect::<Result<Vec<_>>>()?;
     if all {
         sessions.sort_by_key(|session| std::cmp::Reverse(total_tokens(&session.report)));
@@ -117,11 +143,16 @@ fn run_report(all: bool, selected_id: Option<&str>, json: bool, compact: bool) -
     Ok(())
 }
 
-fn parse_session(path: &PathBuf) -> Result<SessionSummary> {
+fn parse_session(path: &PathBuf, source: LogSource) -> Result<SessionSummary> {
     let file = File::open(path)
         .with_context(|| format!("failed to open session log {}", path.display()))?;
-    let (events, stats) = source::claude_code::parse(BufReader::new(file))
-        .with_context(|| format!("failed to parse session log {}", path.display()))?;
+    let (events, stats) = match source {
+        LogSource::Claude => {
+            source::claude_code::parse(BufReader::new(file)).map_err(anyhow::Error::from)
+        }
+        LogSource::Codex => source::codex::parse(BufReader::new(file)).map_err(anyhow::Error::from),
+    }
+    .with_context(|| format!("failed to parse session log {}", path.display()))?;
     let session_id = events
         .iter()
         .find_map(|event| event.session_id.clone())

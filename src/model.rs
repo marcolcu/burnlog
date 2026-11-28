@@ -17,6 +17,7 @@ pub struct Event {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EventKind {
+    Usage,
     UserPrompt,
     AssistantMessage,
     ToolCall,

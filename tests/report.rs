@@ -7,6 +7,32 @@ use burnlog::source::claude_code::{ParseStats, parse};
 use serde_json::Value;
 use std::io::Cursor;
 
+#[test]
+fn data_quality_reports_missing_usage_and_unparsed_share() {
+    let input = r#"{"type":"assistant","message":{"id":"a","content":[],"usage":{"input_tokens":0,"output_tokens":2}}}
+{"type":"assistant","message":{"id":"a","content":[],"usage":{"input_tokens":0,"output_tokens":2}}}
+{"type":"assistant","message":{"id":"b","content":[]}}
+not json"#;
+    let (events, stats) = parse(Cursor::new(input)).unwrap();
+    let report = analyze(&events);
+    let value = burnlog::render::json_value("synthetic", &report, stats.clone());
+    assert_eq!(value["usage_coverage"]["messages"], 2);
+    assert_eq!(value["usage_coverage"]["input"], 1);
+    assert_eq!(value["usage_coverage"]["output"], 1);
+    assert_eq!(value["usage_coverage"]["cache_read"], 0);
+    assert_eq!(value["unparsed_percent"], 25.0);
+    let output = table("synthetic", &report, stats, false);
+    assert!(output.contains("Usage coverage"));
+    assert!(output.contains("25.0%"));
+}
+
+#[test]
+fn empty_log_has_no_unparsed_percentage() {
+    let (events, stats) = parse(Cursor::new("")).unwrap();
+    let value = burnlog::render::json_value("empty", &analyze(&events), stats);
+    assert!(value["unparsed_percent"].is_null());
+}
+
 fn project_with_sessions() -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().join("workspace");
@@ -62,7 +88,7 @@ fn cli_reports_package_version() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "burnlog 0.1.1\n");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "burnlog 0.1.2\n");
 }
 
 #[test]
