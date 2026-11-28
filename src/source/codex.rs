@@ -126,11 +126,15 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
                     .get("name")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                item.tool_label = item
+                    .tool_name
+                    .as_deref()
+                    .and_then(|name| codex_tool_label(name, payload));
                 if let (Some(id), Some(name)) = (
                     payload.get("call_id").and_then(Value::as_str),
                     &item.tool_name,
                 ) {
-                    tools.insert(id.to_owned(), name.clone());
+                    tools.insert(id.to_owned(), (name.clone(), item.tool_label.clone()));
                 }
                 events.push(item);
             }
@@ -141,11 +145,14 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
                 ) =>
             {
                 item.kind = EventKind::ToolResult;
-                item.tool_name = payload
+                if let Some((name, label)) = payload
                     .get("call_id")
                     .and_then(Value::as_str)
                     .and_then(|id| tools.get(id))
-                    .cloned();
+                {
+                    item.tool_name = Some(name.clone());
+                    item.tool_label = label.clone();
+                }
                 item.size_tokens = payload.get("output").and_then(output_size);
                 item.estimated = item.size_tokens.is_some();
                 events.push(item);
@@ -222,6 +229,44 @@ pub fn parse<R: BufRead>(reader: R) -> io::Result<(Vec<Event>, ParseStats)> {
     stats.unparsed =
         stats.invalid_json + stats.unknown_type + stats.deserialize_failed + stats.other;
     Ok((events, stats))
+}
+
+fn codex_tool_label(name: &str, payload: &Value) -> Option<String> {
+    match name {
+        "exec" => Some("tool execution".to_owned()),
+        "exec_command" | "shell_command" | "shell" => {
+            let arguments = payload
+                .get("arguments")
+                .and_then(Value::as_str)
+                .and_then(|value| serde_json::from_str::<Value>(value).ok());
+            let command = arguments
+                .as_ref()
+                .and_then(|value| value.get("cmd").or_else(|| value.get("command")))
+                .and_then(Value::as_str)
+                .and_then(|value| value.split_whitespace().next());
+            let label = command
+                .filter(|command| {
+                    matches!(
+                        *command,
+                        "rg" | "cat"
+                            | "sed"
+                            | "head"
+                            | "tail"
+                            | "git"
+                            | "cargo"
+                            | "ls"
+                            | "find"
+                            | "pwd"
+                            | "wc"
+                            | "sort"
+                            | "diff"
+                    )
+                })
+                .unwrap_or("shell command");
+            Some(label.to_owned())
+        }
+        _ => None,
+    }
 }
 
 fn output_size(output: &Value) -> Option<u64> {

@@ -3,6 +3,32 @@ use std::io::Cursor;
 use burnlog::{analyze::analyze, source::codex::parse};
 
 #[test]
+fn shell_tool_result_labels_expose_only_known_command_names() {
+    let input = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"a","arguments":"{\"cmd\":\"rg secret /private/path\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"a","output":"private result"}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"b","arguments":"{\"cmd\":\"private-command secret\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"b","output":"private result"}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec","call_id":"c","arguments":"{\"code\":\"secret code\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"private result"}}"#;
+    let (events, stats) = parse(Cursor::new(input)).unwrap();
+    let report = analyze(&events);
+    let labels: Vec<_> = report
+        .top_tool_results
+        .iter()
+        .map(|v| v.label.as_deref())
+        .collect();
+    assert!(labels.contains(&Some("rg")));
+    assert!(labels.contains(&Some("shell command")));
+    assert!(labels.contains(&Some("tool execution")));
+    let table = burnlog::render::table("synthetic", &report, stats.clone(), false);
+    let json = burnlog::render::json_value("synthetic", &report, stats).to_string();
+    for secret in ["secret", "private", "/private/path"] {
+        assert!(!table.contains(secret));
+        assert!(!json.contains(secret));
+    }
+}
+
+#[test]
 fn mixed_prompt_formats_warn_about_possible_duplicates() {
     let input = r#"{"type":"event_msg","payload":{"type":"user_message","message":"private"}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"u1"}}}"#;
